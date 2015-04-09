@@ -112,6 +112,7 @@ cudaError_t AliasTemporaries(
 
 
 
+int g_ptx_version = 0;
 /**
  * \brief Retrieves the PTX version that will be used on the current device (major * 100 + minor * 10)
  */
@@ -146,9 +147,18 @@ CUB_RUNTIME_FUNCTION __forceinline__ cudaError_t PtxVersion(int &ptx_version)
     cudaError_t error = cudaSuccess;
     do
     {
-        cudaFuncAttributes empty_kernel_attrs;
-        if (CubDebug(error = cudaFuncGetAttributes(&empty_kernel_attrs, EmptyKernel<void>))) break;
-        ptx_version = empty_kernel_attrs.ptxVersion * 10;
+        if (g_ptx_version)
+        {
+            ptx_version = g_ptx_version;
+        }
+        else 
+        {
+            cudaFuncAttributes empty_kernel_attrs;
+            if (CubDebug(error = cudaFuncGetAttributes(&empty_kernel_attrs, EmptyKernel<void>))) break;
+            ptx_version = empty_kernel_attrs.ptxVersion * 10;
+            printf("ptx version is %d\n", ptx_version);
+            g_ptx_version = ptx_version;
+        }
     }
     while (0);
 
@@ -204,6 +214,8 @@ static cudaError_t SyncStream(cudaStream_t stream)
 }
 
 
+
+
 /**
  * \brief Computes maximum SM occupancy in thread blocks for the given kernel function pointer \p kernel_ptr.
  */
@@ -235,9 +247,26 @@ cudaError_t MaxSmOccupancy(
         int reg_alloc_unit      = CUB_REG_ALLOC_UNIT(sm_version);
         int smem_bytes          = CUB_SMEM_BYTES(sm_version);
 
-        // Get kernel attributes
         cudaFuncAttributes kernel_attrs;
-        if (CubDebug(error = cudaFuncGetAttributes(&kernel_attrs, kernel_ptr))) break;
+
+        static KernelPtr cached_ptr;
+        static cudaFuncAttributes cached_kernel_attrs;
+        
+        // IAN HACK
+        // We're making a call to cudaFuncAttributes on every single kernel launch, and they're extremely slow - they pthread_lock each other on the CPU side. All of the requests seem to be to the same kernel, so we cache the attributes for massive performance improvements.
+        if (kernel_ptr == cached_ptr)
+        {
+            kernel_attrs = cached_kernel_attrs;
+        }
+        else
+        {
+            // Get kernel attributes
+            printf("get attrs %p\n", kernel_ptr);
+            if (CubDebug(error = cudaFuncGetAttributes(&kernel_attrs, kernel_ptr))) break;
+
+            cached_kernel_attrs = kernel_attrs;
+            cached_ptr = kernel_ptr;
+        }
 
         // Number of warps per threadblock
         int block_warps = (block_threads +  warp_threads - 1) / warp_threads;
